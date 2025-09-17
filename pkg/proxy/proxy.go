@@ -267,6 +267,40 @@ func (c *SpiceDBKubeProxy) GetSpiceDBClient() v1.PermissionsServiceClient {
 	return c.proxySrv.PermissionClient()
 }
 
+// GrantViewPermission grants view permission on a namespace to a user in SpiceDB
+func (c *SpiceDBKubeProxy) GrantViewPermission(ctx context.Context, namespace, user string) error {
+	client := c.GetSpiceDBClient()
+	if client == nil {
+		return fmt.Errorf("SpiceDB client not available")
+	}
+
+	// Create relationship: namespace:namespace#viewer@user:user
+	relationship := &v1.Relationship{
+		Resource: &v1.ObjectReference{
+			ObjectType: "namespace",
+			ObjectId:   namespace,
+		},
+		Relation: "viewer",
+		Subject: &v1.SubjectReference{
+			Object: &v1.ObjectReference{
+				ObjectType: "user",
+				ObjectId:   user,
+			},
+		},
+	}
+
+	_, err := client.WriteRelationships(ctx, &v1.WriteRelationshipsRequest{
+		Updates: []*v1.RelationshipUpdate{
+			{
+				Operation:    v1.RelationshipUpdate_OPERATION_CREATE,
+				Relationship: relationship,
+			},
+		},
+	})
+
+	return err
+}
+
 // StartSpiceDBDataPrinter starts a goroutine that periodically prints SpiceDB data
 func (c *SpiceDBKubeProxy) StartSpiceDBDataPrinter(ctx context.Context) {
 	go func() {

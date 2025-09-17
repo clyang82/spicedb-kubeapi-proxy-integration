@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"k8s.io/client-go/rest"
@@ -105,12 +106,12 @@ func NewServer() (*Server, error) {
 		}
 
 		// Use authenticated user for namespace creation
-		if err := proxy.CreateNamespaceAsUser(r.Context(), user.Username, req.Namespace); err != nil {
+		if err := proxy.CreateNamespaceAsUser(r.Context(), sanitizeUserName(user.Username), req.Namespace); err != nil {
 			writeJSON(w, api.Response{Success: false, Error: err.Error()})
 			return
 		}
 
-		writeJSON(w, api.Response{Success: true, Data: map[string]string{"namespace": req.Namespace, "user": user.Username}})
+		writeJSON(w, api.Response{Success: true, Data: map[string]string{"namespace": req.Namespace, "user": sanitizeUserName(user.Username)}})
 	})
 
 	mux.HandleFunc("/api/namespaces/list", func(w http.ResponseWriter, r *http.Request) {
@@ -137,13 +138,65 @@ func NewServer() (*Server, error) {
 			return
 		}
 
-		namespaces, err := proxy.ListNamespacesAsUser(r.Context(), user.Username)
+		namespaces, err := proxy.ListNamespacesAsUser(r.Context(), sanitizeUserName(user.Username))
 		if err != nil {
 			writeJSON(w, api.Response{Success: false, Error: err.Error()})
 			return
 		}
 
-		writeJSON(w, api.Response{Success: true, Data: map[string]interface{}{"namespaces": namespaces, "user": user.Username}})
+		writeJSON(w, api.Response{Success: true, Data: map[string]interface{}{"namespaces": namespaces, "user": sanitizeUserName(user.Username)}})
+	})
+
+	mux.HandleFunc("/api/namespaces/grant-view", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		// Authenticate user from request headers
+		user, err := proxy.AuthenticateFromRequest(r)
+		if err != nil {
+			writeJSON(w, api.Response{Success: false, Error: fmt.Sprintf("Authentication failed: %v", err)})
+			return
+		}
+
+		var req api.GrantViewPermissionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, api.Response{Success: false, Error: "Invalid JSON"})
+			return
+		}
+
+		if req.Namespace == "" || req.User == "" {
+			writeJSON(w, api.Response{Success: false, Error: "Both namespace and user are required"})
+			return
+		}
+
+		// Check if user has admin permission on the namespace
+		allowed, err := proxy.CheckKubernetesPermission(r.Context(), user, "namespaces", "update", req.Namespace)
+		if err != nil {
+			writeJSON(w, api.Response{Success: false, Error: fmt.Sprintf("Permission check failed: %v", err)})
+			return
+		}
+		if !allowed {
+			writeJSON(w, api.Response{Success: false, Error: "User does not have permission to grant access to this namespace"})
+			return
+		}
+
+		// Grant view permission in SpiceDB
+		if err := proxy.GrantViewPermission(r.Context(), req.Namespace, sanitizeUserName(req.User)); err != nil {
+			writeJSON(w, api.Response{Success: false, Error: fmt.Sprintf("Failed to grant view permission: %v", err)})
+			return
+		}
+
+		writeJSON(w, api.Response{
+			Success: true, 
+			Data: map[string]string{
+				"namespace": req.Namespace,
+				"user": sanitizeUserName(req.User),
+				"permission": "view",
+				"granted_by": sanitizeUserName(user.Username),
+			},
+		})
 	})
 
 	// Example usage endpoint
@@ -158,16 +211,18 @@ func NewServer() (*Server, error) {
 			"endpoints": map[string]string{
 				"create_namespace": "POST /api/namespaces/create",
 				"list_namespaces":  "POST /api/namespaces/list",
+				"grant_view":       "POST /api/namespaces/grant-view",
 				"health":           "GET /healthz",
 				"ready":            "GET /readyz",
 			},
 			"example_requests": map[string]interface{}{
 				"create_namespace": map[string]string{
-					"username":  "alice",
 					"namespace": "alice-workspace",
 				},
-				"list_namespaces": map[string]string{
-					"username": "alice",
+				"list_namespaces": map[string]string{},
+				"grant_view": map[string]string{
+					"namespace": "alice-workspace",
+					"user":      "bob",
 				},
 			},
 		}
@@ -184,6 +239,22 @@ func NewServer() (*Server, error) {
 		proxy:  proxy,
 		server: server,
 	}, nil
+}
+
+// sanitizeUserName converts user names to be valid SpiceDB object IDs
+// For service accounts, extract just the service account name (e.g., testuser from system:serviceaccount:spicedb-proxy:testuser)
+// For other users, replace invalid characters with underscores
+func sanitizeUserName(userName string) string {
+	// Check if this is a service account name
+	if strings.HasPrefix(userName, "system:serviceaccount:") {
+		// Extract the service account name from system:serviceaccount:namespace:name
+		parts := strings.Split(userName, ":")
+		if len(parts) >= 4 {
+			return parts[3] // Return just the service account name
+		}
+	}
+
+	return userName
 }
 
 func writeJSON(w http.ResponseWriter, v interface{}) {

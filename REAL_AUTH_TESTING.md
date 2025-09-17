@@ -14,12 +14,12 @@ This updated implementation now validates users against actual Kubernetes RBAC p
 
 ```bash
 # Get a service account token
-kubectl create serviceaccount test-user
-kubectl create token test-user
+kubectl create serviceaccount testuser
+kubectl create token testuser
 
 # Use the token in API calls
 curl -k -X POST \
-  -H "Authorization: Bearer <service-account-token>" \
+  -H "Authorization: Bearer $token" \
   -H "Content-Type: application/json" \
   -d '{"namespace": "test-ns"}' \
   https://your-proxy/api/namespaces/create
@@ -92,9 +92,9 @@ kind: ClusterRoleBinding
 metadata:
   name: testuser-namespace-manager
 subjects:
-- kind: User
+- kind: ServiceAccount
   name: testuser
-  apiGroup: rbac.authorization.k8s.io
+  namespace: spicedb-proxy
 roleRef:
   kind: ClusterRole
   name: namespace-manager

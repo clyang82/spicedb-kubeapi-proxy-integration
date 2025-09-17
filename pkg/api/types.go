@@ -5,6 +5,11 @@ type CreateNamespaceRequest struct {
 	Namespace string `json:"namespace"`
 }
 
+type GrantViewPermissionRequest struct {
+	Namespace string `json:"namespace"`
+	User      string `json:"user"`
+}
+
 // API Response type
 type Response struct {
 	Success bool        `json:"success"`
