@@ -68,10 +68,17 @@ func NewServer() (*Server, error) {
 		w.Write([]byte("ready"))
 	})
 
-	// API endpoints
+	// API endpoints with real authentication
 	mux.HandleFunc("/api/namespaces/create", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		// Authenticate user from request headers
+		user, err := proxy.AuthenticateFromRequest(r)
+		if err != nil {
+			writeJSON(w, api.Response{Success: false, Error: fmt.Sprintf("Authentication failed: %v", err)})
 			return
 		}
 
@@ -81,17 +88,29 @@ func NewServer() (*Server, error) {
 			return
 		}
 
-		if req.Username == "" || req.Namespace == "" {
-			writeJSON(w, api.Response{Success: false, Error: "Username and namespace are required"})
+		if req.Namespace == "" {
+			writeJSON(w, api.Response{Success: false, Error: "Namespace is required"})
 			return
 		}
 
-		if err := proxy.CreateNamespaceAsUser(r.Context(), req.Username, req.Namespace); err != nil {
+		// Check Kubernetes RBAC permission first
+		allowed, err := proxy.CheckKubernetesPermission(r.Context(), user, "namespaces", "create", "")
+		if err != nil {
+			writeJSON(w, api.Response{Success: false, Error: fmt.Sprintf("Permission check failed: %v", err)})
+			return
+		}
+		if !allowed {
+			writeJSON(w, api.Response{Success: false, Error: "User does not have permission to create namespaces"})
+			return
+		}
+
+		// Use authenticated user for namespace creation
+		if err := proxy.CreateNamespaceAsUser(r.Context(), user.Username, req.Namespace); err != nil {
 			writeJSON(w, api.Response{Success: false, Error: err.Error()})
 			return
 		}
 
-		writeJSON(w, api.Response{Success: true, Data: map[string]string{"namespace": req.Namespace}})
+		writeJSON(w, api.Response{Success: true, Data: map[string]string{"namespace": req.Namespace, "user": user.Username}})
 	})
 
 	mux.HandleFunc("/api/namespaces/list", func(w http.ResponseWriter, r *http.Request) {
@@ -100,24 +119,31 @@ func NewServer() (*Server, error) {
 			return
 		}
 
-		var req api.ListNamespacesRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeJSON(w, api.Response{Success: false, Error: "Invalid JSON"})
+		// Authenticate user from request headers
+		user, err := proxy.AuthenticateFromRequest(r)
+		if err != nil {
+			writeJSON(w, api.Response{Success: false, Error: fmt.Sprintf("Authentication failed: %v", err)})
 			return
 		}
 
-		if req.Username == "" {
-			writeJSON(w, api.Response{Success: false, Error: "Username is required"})
+		// Check Kubernetes RBAC permission first
+		allowed, err := proxy.CheckKubernetesPermission(r.Context(), user, "namespaces", "list", "")
+		if err != nil {
+			writeJSON(w, api.Response{Success: false, Error: fmt.Sprintf("Permission check failed: %v", err)})
+			return
+		}
+		if !allowed {
+			writeJSON(w, api.Response{Success: false, Error: "User does not have permission to list namespaces"})
 			return
 		}
 
-		namespaces, err := proxy.ListNamespacesAsUser(r.Context(), req.Username)
+		namespaces, err := proxy.ListNamespacesAsUser(r.Context(), user.Username)
 		if err != nil {
 			writeJSON(w, api.Response{Success: false, Error: err.Error()})
 			return
 		}
 
-		writeJSON(w, api.Response{Success: true, Data: map[string][]string{"namespaces": namespaces}})
+		writeJSON(w, api.Response{Success: true, Data: map[string]interface{}{"namespaces": namespaces, "user": user.Username}})
 	})
 
 	// Example usage endpoint

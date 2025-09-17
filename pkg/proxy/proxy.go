@@ -17,13 +17,16 @@ import (
 	"github.com/authzed/spicedb-kubeapi-proxy/pkg/config/proxyrule"
 	"github.com/authzed/spicedb-kubeapi-proxy/pkg/proxy"
 	"github.com/authzed/spicedb-kubeapi-proxy/pkg/rules"
+
+	"github.com/clyang82/spicedb-kubeapi-proxy-integration/pkg/auth"
 )
 
 // SpiceDBKubeProxy integrates SpiceDB authorization with Kubernetes API access
 type SpiceDBKubeProxy struct {
-	proxySrv     *proxy.Server
-	kubeClient   *kubernetes.Clientset
-	embeddedHTTP *http.Client
+	proxySrv      *proxy.Server
+	kubeClient    *kubernetes.Clientset
+	embeddedHTTP  *http.Client
+	authenticator *auth.Authenticator
 }
 
 // NewSpiceDBKubeProxy creates a new proxy with embedded spicedb-kubeapi-proxy
@@ -175,8 +178,15 @@ relationships: |
 		return nil, fmt.Errorf("failed to create proxy server: %w", err)
 	}
 
+	// Create authenticator
+	authenticator, err := auth.NewAuthenticator(kubeConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create authenticator: %w", err)
+	}
+
 	return &SpiceDBKubeProxy{
-		proxySrv: proxySrv,
+		proxySrv:      proxySrv,
+		authenticator: authenticator,
 	}, nil
 }
 
@@ -238,6 +248,20 @@ func (c *SpiceDBKubeProxy) ListNamespacesAsUser(ctx context.Context, username st
 	return names, nil
 }
 
+// AuthenticateFromRequest authenticates a user from HTTP request
+func (c *SpiceDBKubeProxy) AuthenticateFromRequest(r *http.Request) (*auth.UserInfo, error) {
+	authResult := c.authenticator.AuthenticateRequest(r)
+	if !authResult.Authenticated {
+		return nil, authResult.Error
+	}
+	return authResult.User, nil
+}
+
+// CheckKubernetesPermission checks if user has Kubernetes RBAC permission
+func (c *SpiceDBKubeProxy) CheckKubernetesPermission(ctx context.Context, user *auth.UserInfo, resource, verb, namespace string) (bool, error) {
+	return c.authenticator.CheckKubernetesPermission(ctx, user, resource, verb, namespace)
+}
+
 // GetSpiceDBClient returns the SpiceDB permissions client from the embedded proxy
 func (c *SpiceDBKubeProxy) GetSpiceDBClient() v1.PermissionsServiceClient {
 	return c.proxySrv.PermissionClient()
@@ -274,36 +298,47 @@ func (c *SpiceDBKubeProxy) printSpiceDBData(ctx context.Context) {
 	log.Println("=== SpiceDB Data Snapshot ===")
 
 	// Read relationships - we'll read a sample to see what's in the system
-	relResp, err := client.ReadRelationships(ctx, &v1.ReadRelationshipsRequest{
-		OptionalLimit: 100, // Limit to avoid too much output
-	})
-	if err != nil {
-		log.Printf("Error reading relationships: %v", err)
-		return
-	}
-
-	log.Println("Current Relationships:")
-	relationshipCount := 0
-	for {
-		msg, err := relResp.Recv()
+	// Query for namespace relationships first, then other types
+	resourceTypes := []string{"namespace", "pod", "user", "cluster", "testresource", "workflow", "activity", "lock"}
+	
+	totalRelationshipCount := 0
+	for _, resourceType := range resourceTypes {
+		relResp, err := client.ReadRelationships(ctx, &v1.ReadRelationshipsRequest{
+			RelationshipFilter: &v1.RelationshipFilter{
+				ResourceType: resourceType,
+			},
+			OptionalLimit: 50, // Limit per resource type
+		})
 		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			log.Printf("Error receiving relationship: %v", err)
-			break
+			log.Printf("Error reading %s relationships: %v", resourceType, err)
+			continue
 		}
 
-		rel := msg.Relationship
-		log.Printf("  %s:%s#%s@%s:%s",
-			rel.Resource.ObjectType,
-			rel.Resource.ObjectId,
-			rel.Relation,
-			rel.Subject.Object.ObjectType,
-			rel.Subject.Object.ObjectId)
-		relationshipCount++
+		log.Printf("Current %s Relationships:", resourceType)
+		resourceRelationshipCount := 0
+		for {
+			msg, err := relResp.Recv()
+			if err != nil {
+				if err == io.EOF {
+					break
+				}
+				log.Printf("Error receiving %s relationship: %v", resourceType, err)
+				break
+			}
+
+			rel := msg.Relationship
+			log.Printf("  %s:%s#%s@%s:%s",
+				rel.Resource.ObjectType,
+				rel.Resource.ObjectId,
+				rel.Relation,
+				rel.Subject.Object.ObjectType,
+				rel.Subject.Object.ObjectId)
+			resourceRelationshipCount++
+		}
+		log.Printf("Total %s relationships found: %d", resourceType, resourceRelationshipCount)
+		totalRelationshipCount += resourceRelationshipCount
 	}
 
-	log.Printf("Total relationships found: %d", relationshipCount)
+	log.Printf("Total relationships found: %d", totalRelationshipCount)
 	log.Println("=== End SpiceDB Data Snapshot ===")
 }
