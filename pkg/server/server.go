@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"k8s.io/client-go/rest"
@@ -16,27 +17,38 @@ import (
 
 // Server wraps the embedded SpiceDB proxy for HTTP API access
 type Server struct {
-	component *proxy.SpiceDBKubeProxy
-	server    *http.Server
+	proxy  *proxy.SpiceDBKubeProxy
+	server *http.Server
 }
 
 // NewServer creates a new HTTP server with the embedded proxy
 func NewServer() (*Server, error) {
+	// Set cache directory to writable location
+	err := os.Setenv("KUBECACHEDIR", "/tmp/kube-cache")
+	if err != nil {
+		log.Printf("Warning: failed to set KUBECACHEDIR: %v", err)
+	}
+
+	// Create cache directory if it doesn't exist
+	if err := os.MkdirAll("/tmp/kube-cache", 0755); err != nil {
+		log.Printf("Warning: failed to create cache directory: %v", err)
+	}
+
 	// Get in-cluster config
 	kubeConfig, err := rest.InClusterConfig()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get in-cluster config: %w", err)
 	}
 
-	// Create component
-	component, err := proxy.NewSpiceDBKubeProxy(context.Background(), kubeConfig)
+	// Create proxy
+	proxy, err := proxy.NewSpiceDBKubeProxy(context.Background(), kubeConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create component: %w", err)
+		return nil, fmt.Errorf("failed to create proxy: %w", err)
 	}
 
-	// Start the component
-	if err := component.Start(context.Background()); err != nil {
-		return nil, fmt.Errorf("failed to start component: %w", err)
+	// Start the proxy
+	if err := proxy.Start(context.Background()); err != nil {
+		return nil, fmt.Errorf("failed to start proxy: %w", err)
 	}
 
 	// Wait for proxy to be ready
@@ -44,13 +56,13 @@ func NewServer() (*Server, error) {
 
 	// Create HTTP server
 	mux := http.NewServeMux()
-	
+
 	// Health endpoints
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})
-	
+
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ready"))
@@ -74,7 +86,7 @@ func NewServer() (*Server, error) {
 			return
 		}
 
-		if err := component.CreateNamespaceAsUser(r.Context(), req.Username, req.Namespace); err != nil {
+		if err := proxy.CreateNamespaceAsUser(r.Context(), req.Username, req.Namespace); err != nil {
 			writeJSON(w, api.Response{Success: false, Error: err.Error()})
 			return
 		}
@@ -99,7 +111,7 @@ func NewServer() (*Server, error) {
 			return
 		}
 
-		namespaces, err := component.ListNamespacesAsUser(r.Context(), req.Username)
+		namespaces, err := proxy.ListNamespacesAsUser(r.Context(), req.Username)
 		if err != nil {
 			writeJSON(w, api.Response{Success: false, Error: err.Error()})
 			return
@@ -143,8 +155,8 @@ func NewServer() (*Server, error) {
 	}
 
 	return &Server{
-		component: component,
-		server:    server,
+		proxy:  proxy,
+		server: server,
 	}, nil
 }
 
@@ -164,7 +176,7 @@ func (s *Server) Stop(ctx context.Context) error {
 	return s.server.Shutdown(ctx)
 }
 
-// GetComponent returns the SpiceDB proxy component
-func (s *Server) GetComponent() *proxy.SpiceDBKubeProxy {
-	return s.component
+// GetProxy returns the SpiceDB proxy
+func (s *Server) GetProxy() *proxy.SpiceDBKubeProxy {
+	return s.proxy
 }

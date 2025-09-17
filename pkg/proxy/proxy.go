@@ -26,7 +26,7 @@ type SpiceDBKubeProxy struct {
 	embeddedHTTP *http.Client
 }
 
-// NewSpiceDBKubeProxy creates a new proxy component with embedded spicedb-kubeapi-proxy
+// NewSpiceDBKubeProxy creates a new proxy with embedded spicedb-kubeapi-proxy
 func NewSpiceDBKubeProxy(ctx context.Context, kubeConfig *rest.Config) (*SpiceDBKubeProxy, error) {
 	// Bootstrap content for SpiceDB schema - includes required workflow definitions
 	bootstrapContent := map[string][]byte{
@@ -72,7 +72,7 @@ relationships: |
 
 	// Create embedded proxy options
 	opts := proxy.NewOptions(proxy.WithEmbeddedProxy, proxy.WithEmbeddedSpiceDBBootstrap(bootstrapContent))
-	
+
 	// Set workflow database to a unique path to avoid conflicts
 	opts.WorkflowDatabasePath = fmt.Sprintf("/tmp/proxy-workflow-%d.sqlite", time.Now().UnixNano())
 
@@ -293,17 +293,17 @@ func (c *SpiceDBKubeProxy) printSpiceDBData(ctx context.Context) {
 			log.Printf("Error receiving relationship: %v", err)
 			break
 		}
-		
+
 		rel := msg.Relationship
-		log.Printf("  %s:%s#%s@%s:%s", 
-			rel.Resource.ObjectType, 
+		log.Printf("  %s:%s#%s@%s:%s",
+			rel.Resource.ObjectType,
 			rel.Resource.ObjectId,
 			rel.Relation,
 			rel.Subject.Object.ObjectType,
 			rel.Subject.Object.ObjectId)
 		relationshipCount++
 	}
-	
+
 	log.Printf("Total relationships found: %d", relationshipCount)
 	log.Println("=== End SpiceDB Data Snapshot ===")
 }

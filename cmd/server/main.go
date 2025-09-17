@@ -12,7 +12,6 @@ import (
 	"github.com/clyang82/spicedb-kubeapi-proxy-integration/pkg/server"
 )
 
-
 func main() {
 	srv, err := server.NewServer()
 	if err != nil {
@@ -24,7 +23,7 @@ func main() {
 	defer cancel()
 
 	// Start SpiceDB data printer goroutine
-	srv.GetComponent().StartSpiceDBDataPrinter(ctx)
+	srv.GetProxy().StartSpiceDBDataPrinter(ctx)
 
 	// Start server in goroutine
 	go func() {
