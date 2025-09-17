@@ -1,0 +1,95 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: spicedb-proxy
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spicedb-proxy-integration
+  namespace: spicedb-proxy
+  labels:
+    app: spicedb-proxy-integration
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spicedb-proxy-integration
+  template:
+    metadata:
+      labels:
+        app: spicedb-proxy-integration
+    spec:
+      serviceAccountName: spicedb-proxy-integration
+      containers:
+      - name: integration
+        image: quay.io/clyang82/spicedb-proxy-integration:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+          name: http
+        - containerPort: 8443
+          name: https
+        env:
+        - name: NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        volumeMounts:
+        - name: workflow-storage
+          mountPath: /tmp
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65532
+          capabilities:
+            drop:
+            - ALL
+      volumes:
+      - name: workflow-storage
+        emptyDir: {}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: spicedb-proxy-integration
+  namespace: spicedb-proxy
+  labels:
+    app: spicedb-proxy-integration
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
+    name: http
+  - port: 8443
+    targetPort: 8443
+    protocol: TCP
+    name: https
+  selector:
+    app: spicedb-proxy-integration
